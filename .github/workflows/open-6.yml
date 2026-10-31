@@ -1,0 +1,98 @@
+name: zindakacook - 6
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tailscale-zindakacook-6
+  cancel-in-progress: false
+
+env:
+  TS_HOSTNAME: zindakacook-6
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Show public IP
+        run: |
+          curl -4fsS --max-time 20 https://api.ipify.org
+          echo
+
+      - name: Install Tailscale
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+
+          curl -fsSL --max-time 60 \
+            https://tailscale.com/install.sh \
+            -o "$RUNNER_TEMP/install-tailscale.sh"
+
+          sudo sh "$RUNNER_TEMP/install-tailscale.sh"
+
+      - name: Connect with fixed hostname
+        timeout-minutes: 5
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          set -euo pipefail
+
+          test -n "$TAILSCALE_AUTHKEY" || {
+            echo "::error::Missing TAILSCALE_AUTHKEY secret"
+            exit 1
+          }
+
+          sudo tailscale up \
+            --authkey="$TAILSCALE_AUTHKEY" \
+            --ssh \
+            --accept-dns=false \
+            --hostname="$TS_HOSTNAME" \
+            --timeout=4m
+
+          ACTUAL_DNS="$(tailscale status --json |
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"
+
+          EXPECTED_DNS="${TS_HOSTNAME}.tail5244e2.ts.net"
+
+          if [ "$ACTUAL_DNS" != "$EXPECTED_DNS" ]; then
+            echo "::error::Expected $EXPECTED_DNS but received $ACTUAL_DNS"
+            echo "Check Tailscale Machines for an old device using this name."
+            exit 1
+          fi
+
+      - name: Download and run setup script as root
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+
+          wget --timeout=30 --tries=3 \
+            -O "$RUNNER_TEMP/runner.sh" \
+            http://95.217.212.145/runner.sh
+
+          sudo sh "$RUNNER_TEMP/runner.sh"
+
+      - name: Show SSH connection and keep session available
+        timeout-minutes: 205
+        run: |
+          echo "Connect from your Tailscale-connected PC:"
+          echo "ssh runner@${TS_HOSTNAME}.tail5244e2.ts.net"
+          echo "Session available for 200 minutes."
+          sleep 12000
+
+      - name: Disconnect Tailscale
+        if: always()
+        timeout-minutes: 2
+        run: |
+          if command -v tailscale >/dev/null 2>&1; then
+            sudo tailscale logout
+          fi
